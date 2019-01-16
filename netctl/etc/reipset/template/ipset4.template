@@ -1,0 +1,88 @@
+
+# Adding elements to hashed set from userspace (i.e. using ipset(8) utility)
+# may trigger hash table grow that might fail on large sets leaving old hash
+# table with possible high collision rates.
+#
+# For high volume sets it is recommended to set "hashsize" parameter at set
+# create to large value to minimize hash table grows at runtime.
+
+### Initialization file for AFI "inet" ###
+
+## Pre ACLs
+
+# Bypass uRPF (RFC 3704) checks
+create pre-skip-uRPF-v4		hash:net          family inet hashsize 1024 maxelem 65536 counters comment
+
+# Bypass connection tracking
+create pre-inp-notrack-v4	hash:net,port,net family inet hashsize 1024 maxelem 65536 counters comment
+create pre-fwd-notrack-v4	hash:net,net      family inet hashsize 1024 maxelem 65536 counters comment
+
+## Input ACLs
+
+# Allowed services
+create inp-allow-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 counters comment
+
+# Blocked services
+create inp-block-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 timeout 10800 counters comment forceadd
+
+# Ratelimit access to service
+create inp-ratelimit-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 comment
+
+## Forward ACLs
+
+# Block packets from UPLINK to DOWNLINK
+create fwd-u2d-block-net-v4	hash:net,net      family inet hashsize 131072 maxelem 1048576 counters comment
+create fwd-u2d-block-pkt-v4	hash:net,port,net family inet hashsize 131072 maxelem 1048576 counters comment
+
+create fwd-u2d-block-v4		list:set size 8
+add fwd-u2d-block-v4		fwd-u2d-block-net-v4
+add fwd-u2d-block-v4		fwd-u2d-block-pkt-v4
+
+# Block packets from DOWNLINK to UPLINK
+create fwd-d2u-block-net-v4	hash:net,net      family inet hashsize 131072 maxelem 1048576 counters comment
+create fwd-d2u-block-pkt-v4	hash:net,port,net family inet hashsize 131072 maxelem 1048576 counters comment
+
+create fwd-d2u-block-v4		list:set size 8
+add fwd-d2u-block-v4		fwd-d2u-block-net-v4
+add fwd-d2u-block-v4		fwd-d2u-block-pkt-v4
+
+# Block packets from DOWNLINK to DOWNLINK
+create fwd-d2d-block-net-v4	hash:net,net      family inet hashsize 131072 maxelem 1048576 counters comment
+create fwd-d2d-block-pkt-v4	hash:net,port,net family inet hashsize 131072 maxelem 1048576 counters comment
+
+create fwd-d2d-block-v4		list:set size 8
+add fwd-d2d-block-v4		fwd-d2d-block-net-v4
+add fwd-d2d-block-v4		fwd-d2d-block-pkt-v4
+
+# Block packets from UPLINK to UPLINK
+create fwd-u2u-block-net-v4	hash:net,net      family inet hashsize 131072 maxelem 1048576 counters comment
+create fwd-u2u-block-pkt-v4	hash:net,port,net family inet hashsize 131072 maxelem 1048576 counters comment
+
+create fwd-u2u-block-v4		list:set size 8
+add fwd-u2u-block-v4		fwd-u2u-block-net-v4
+add fwd-u2u-block-v4		fwd-u2u-block-pkt-v4
+
+# Classify packets to/from downlink
+create fwd-u2d-classify-v4	hash:net          family inet hashsize 65536 maxelem 65536 skbinfo counters comment
+create fwd-d2u-classify-v4	hash:net          family inet hashsize 65536 maxelem 65536 skbinfo counters comment
+
+## Output ACLs
+
+# Bypass connection tracking
+create out-notrack-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 counters comment
+
+# Blocked services
+create out-block-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 counters comment
+
+## Post ACLs
+
+## Misc ACLs
+
+# Billing hooks
+create pre-block-v4		hash:net          family inet hashsize 65536 maxelem 65536
+create pre-allow4blk-v4		hash:net          family inet hashsize 1024 maxelem 65536
+
+# Mail system hooks
+create mail-spammers-v4		hash:net          family inet hashsize 1024 maxelem 65536
+create mail-smtp-v4		hash:net          family inet hashsize 8192 maxelem 65536
+create mail-smtps-v4		hash:net          family inet hashsize 8192 maxelem 65536

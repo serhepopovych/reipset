@@ -1,0 +1,7 @@
+
+### Initialization file for AFI neutral part ###
+
+## Misc ACLs
+
+# Ports
+create mailports		bitmap:port range 0-65535

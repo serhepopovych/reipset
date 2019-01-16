@@ -1,0 +1,547 @@
+#!/bin/bash
+
+# External tool dependencies, MUST always be defined,
+# even if empty (e.g.: declare -a crt1_request_tools_list=())
+declare -a crt1_request_tools_list=(
+	'ipset'		# ipset(8)
+	'ssh'		# ssh(1)
+	'rsync'		# rsync(1)
+	'cmp'		# cmp(1)
+	'diff'		# diff(1)
+	'service'	# service(8)
+	'sed'		# sed(1)
+	'sort'		# sort(1)
+	'uniq'		# uniq(1)
+	'cat'		# cat(1)
+	'mktemp'	# mktemp(1)
+	'unlink'	# unlink(1)
+	'rm'		# rm(1)
+	'sudo'		# sudo(8)
+)
+
+# Source startup code
+. /netctl/lib/bash/crt1.sh
+
+# Source functions libraries
+. /netctl/lib/bash/libbool.sh
+. /netctl/lib/bash/librtti.sh
+. /netctl/lib/bash/libstring.sh
+. /netctl/lib/bash/libfile.sh
+. /netctl/lib/bash/liblog.sh
+. /netctl/lib/bash/libprocess.sh
+
+# Source reconfiguration library
+. /netctl/lib/bash/libreconf.sh
+
+################################################################################
+
+## If not specified in config, set this to default
+
+# local config
+[ -d "$REIPSET_DIR" ] || REIPSET_DIR="$NCTL_PREFIX/etc/reipset"
+[ -d "$REIPSET_DATADIR" ] || REIPSET_DATADIR="$REIPSET_DIR/data"
+[ -n "$REIPSET_SYS_SVC_NAME" ] || REIPSET_SYS_SVC_NAME='ipset'
+
+[ -n "$REIPSET_URL" ] || REIPSET_URL="rsync://$USER@localhost/home/reipset/$HOSTNAME/"
+[ -n "$REIPSET_RSYNC_ARGS" ] || REIPSET_RSYNC_ARGS='-a -e ssh'
+
+### DO NOT EDIT BELOW THIS LINE ###
+
+# Usage: reipset_match_line <set_name_line>
+reipset_match_line()
+{
+	local set_name_line="$1"
+
+	# [{all|local|remote}:]name[,alt_name]
+	#
+	# 'all:local,remote'
+	# ':local,remote'
+	# 'local,remote'
+	# 'all:local'
+	# ':local'
+	# 'local'
+	# 'all:,remote'  -> error: no set_name
+	# 'all,remote'
+	# ':,'           -> error: no set_name
+	# ':,remote'     -> error: no set_name
+	# ',remote'      -> error: no set_name
+	# 'all:local'
+	# ':local'
+	# 'local'
+	# 'all:'         -> error: no set name
+
+	[[ "$set_name_line" =~ ^((all|local|remote|external|):)?([^:,]+)(,(.*))?$ ]] || return
+
+	# Return:
+	#  set_type="${BASH_REMATCH[2]}"
+	#  set_name="${BASH_REMATCH[3]}"
+	#  set_fetch_name="${BASH_REMATCH[5]}"
+}
+
+## Handle list of sets
+
+declare skip_external
+
+declare -a reipset_sets
+declare -a reipset_sets_uniq
+
+if [ ${#reipset_sets[@]} -gt 0 ]; then
+	# List of sets given in environment variable "reipset_sets"
+	nctl_strsep "$reipset_sets" ',' reipset_sets
+	skip_external=''
+else
+	# List of sets given in configuration variable "REIPSET_SETS"
+	nctl_set_val reipset_sets "${REIPSET_SETS[@]}"
+	skip_external=y
+fi
+
+# Make list of sets unique
+reipset_sets=($(IFS=$'\n'; LC_ALL=C; echo "${reipset_sets[*]}" |sort -n |uniq))
+declare -i reipset_sets_size=${#reipset_sets[@]}
+
+# Validate set lines
+for ((i = 0; i < reipset_sets_size; i++)); do
+	set_name_line="${reipset_sets[$i]}"
+
+	reipset_match_line "$set_name_line" ||
+		nctl_log_msg 'invalid set line: %s\n' \
+			"$set_name_line"
+
+	set_fetch_name="${BASH_REMATCH[5]}"
+	set_name="${BASH_REMATCH[3]}"
+	set_type="${BASH_REMATCH[2]}"
+
+	if [ "$set_type" = 'external' ]; then
+		if [ -n "$skip_external" ]; then
+			reipset_sets[$i]=''
+			reipset_sets_uniq[$i]=''
+			continue
+		fi
+		# external is just local
+		set_type='local'
+	else
+		[ -n "$set_type" ] || set_type='all'
+	fi
+
+	[ -z "$set_fetch_name" ] || set_fetch_name=",$set_fetch_name"
+
+	reipset_sets[$i]="$set_type:$set_name$set_fetch_name"
+
+	reipset_sets_uniq[$i]="$set_name"
+	# will make it unique later
+done
+
+# Get rid of empty items
+reipset_sets=($(IFS=$'\n'; echo "${reipset_sets[*]}"))
+reipset_sets_uniq=($(IFS=$'\n'; echo "${reipset_sets_uniq[*]}"))
+
+declare -ar reipset_sets
+declare -ir reipset_sets_size=${#reipset_sets[@]}
+
+[ $reipset_sets_size -gt 0 ] || nctl_log_msg 'no sets to operate on\n' || exit
+
+## Local paths
+
+declare -r reipset_prev_dir="$REIPSET_DATADIR/.prev"
+declare -r reipset_curr_dir="$REIPSET_DATADIR/.curr"
+declare -r reipset_local_dir="$REIPSET_DATADIR/local"
+declare -r reipset_remote_dir="$REIPSET_DATADIR/remote"
+
+## Map set names to filenames
+
+# prev
+declare -a reipset_data_prev
+nctl_templ_expand reipset_data_prev \
+	"$reipset_prev_dir/%s.txt" \
+	"${reipset_sets_uniq[@]}"
+declare -ar reipset_data_prev
+declare -ir reipset_data_prev_size=${#reipset_data_prev[@]}
+
+declare -ar reipset_data_prev_uniq=($(IFS=$'\n'; LC_ALL=C; echo "${reipset_data_prev[*]}" |sort -n |uniq))
+declare -ir reipset_data_prev_uniq_size=${#reipset_data_prev_uniq[@]}
+
+# curr
+declare -a reipset_data_curr
+nctl_templ_expand reipset_data_curr \
+	"$reipset_curr_dir/%s.txt" \
+	"${reipset_sets_uniq[@]}"
+declare -ar reipset_data_curr
+declare -ir reipset_data_curr_size=${#reipset_data_curr[@]}
+
+declare -ar reipset_data_curr_uniq=($(IFS=$'\n'; LC_ALL=C; echo "${reipset_data_curr[*]}" |sort -n |uniq))
+declare -ir reipset_data_curr_uniq_size=${#reipset_data_curr_uniq[@]}
+
+# make array unique
+declare -ar reipset_sets_uniq=($(IFS=$'\n'; LC_ALL=C; echo "${reipset_sets_uniq[*]}" |sort -n |uniq))
+declare -ir reipset_sets_uniq_size=${#reipset_sets_uniq[@]}
+
+## Prepare sed(1) expressions
+
+declare -a reipset_sed
+
+nctl_set_val reipset_sed "${REIPSET_SED[@]}"
+
+declare -i reipset_sed_size=${#reipset_sed[@]}
+
+for ((i = 0; i < reipset_sed_size; i++)); do
+	reipset_sed[$i]="${reipset_sed[$i]};"
+done
+
+declare -ar reipset_sed
+
+## Lock subsystem: prevent from running multiple instances
+nctl_subsys_lock
+nctl_check_ok 'FAIL TO RUN "%s" SUBSYSTEM EXCLUSIVELY\n' "$NCTL_SUBSYS_NAME"
+
+__restore_original_files=n
+exit_handler()
+{
+	# revert before exit on failure
+	if ! nctl_is_no "$__restore_original_files"; then
+		echo '** Restoring original configuration **'
+
+		# restore configuration files
+		nctl_restore \
+			"${reipset_data_curr_uniq[@]}" \
+			"${reipset_data_prev_uniq[@]}" ||
+			nctl_inc_rc nctl_rc
+
+		sudo service "$REIPSET_SYS_SVC_NAME" restart ||
+			nctl_inc_rc nctl_rc
+	fi
+
+	# remove backups
+	nctl_cleanup \
+		"${reipset_data_curr_uniq[@]}" \
+		"${reipset_data_prev_uniq[@]}" ||
+		nctl_inc_rc nctl_rc
+
+	# remove mark files
+	for ((i = 0; i < reipset_data_curr_uniq_size; i++)); do
+		f_ok="${reipset_data_curr_uniq[$i]}.ok"
+		[ ! -e "$f_ok" ] || unlink "$f_ok" || nctl_inc_rc nctl_rc
+		f_once="${reipset_data_prev_uniq[$i]}.once"
+		[ ! -e "$f_once" ] || unlink "$f_once" || nctl_inc_rc nctl_rc
+	done
+
+	# Report end
+	nctl_end_msg
+
+	## Unlock subsystem
+	nctl_subsys_unlock ||
+		nctl_inc_rc nctl_rc
+
+	exit $nctl_rc
+}
+trap 'exit_handler 2>&1 |nctl_log_pipe' EXIT
+
+# Usage: reipset_curr <set_name_line> <set_file_curr>
+reipset_curr()
+{
+	local set_name_line="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name_line)}"
+	local set_file_curr="${2:?missing 2d argument to function \"$FUNCNAME\" (set_file_curr)}"
+	local set_file_curr_tmp
+	# Set Syncronization types
+	#   SS_LOCAL   : Local only
+	#   SS_REMOTE  : Remote only
+	#   SS_ALL     : Both local & remote
+	local -ir SS_LOCAL=1 SS_REMOTE=2 SS_ALL=3
+	local -i ss_type
+
+	reipset_match_line "$set_name_line" || return
+
+	local set_fetch_name="${BASH_REMATCH[5]}"
+	local set_name="${BASH_REMATCH[3]}"
+	local set_type="${BASH_REMATCH[2]}"
+
+	case "$set_type" in
+		all)
+			ss_type=$SS_ALL
+			;;
+		local)
+			ss_type=$SS_LOCAL
+			;;
+		remote)
+			ss_type=$SS_REMOTE
+			;;
+		*)
+			return 1
+			;;
+	esac
+
+	# Skip if already failed sets
+	local -r f_ok="$set_file_curr.ok"
+	[ -e "$f_ok" ] || return 0
+
+	set_file_curr_tmp="$(mktemp "$set_file_curr.XXXXXXXX")" || return
+	trap 'unlink "$set_file_curr_tmp"' RETURN
+
+	# Usage: reipset_cat <dir>
+	reipset_cat()
+	{
+		local reipset_dir="$1"
+		local -a locald
+		local f
+
+		# First try fetch name
+		if [ -n "$set_fetch_name" ]; then
+			locald="$reipset_dir/$set_fetch_name"
+			if [ -d "$locald" ]; then
+				nctl_paths_expand_a locald "$locald/*.rules"
+			else
+				locald="$locald.rules"
+				[ -f "$locald" ] || locald=()
+			fi
+		fi
+
+		# Next set name
+		if [ "${#locald}" -eq 0 ]; then
+			locald="$reipset_dir/$set_name"
+			if [ -d "$locald" ]; then
+				nctl_paths_expand_a locald "$locald/*.rules"
+			else
+				locald=()
+			fi
+		fi
+
+		if [ "${#locald}" -eq 0 ]; then
+			locald="$reipset_dir/$set_name.rules"
+			[ -f "$locald" ] || locald=()
+		fi
+
+		for f in "${locald[@]}"; do
+			if cat "$f"; then
+				# end each file with \n
+				echo
+			else
+				unlink "$f_ok"
+				return
+			fi
+		done
+	}
+
+	{
+		# remote
+		if nctl_is_yes "$REIPSET_FETCH_REMOTE"; then
+			[ $((ss_type & SS_REMOTE)) -eq 0 ] ||
+				reipset_cat "$reipset_remote_dir" ||
+				return
+		fi
+		# local
+		if :; then
+			[ $((ss_type & SS_LOCAL)) -eq 0 ] ||
+				reipset_cat "$reipset_local_dir" ||
+				return
+		fi
+	} >"$set_file_curr_tmp"
+
+	# skip empty lines and substitude patterns
+	sed -E -e '/^[[:space:]]*(#|$)/d' -e "${reipset_sed[*]}" \
+		-i "$set_file_curr_tmp" || return
+
+	# append contents of current file to temporary one
+	cat "$set_file_curr" >>"$set_file_curr_tmp" || return
+
+	# sort(1) and uniq(1) content
+	LC_ALL=C sort -n "$set_file_curr_tmp" |\
+	LC_ALL=C uniq >"$set_file_curr" || return
+}
+
+# Usage: reipset_prev <set_name_line> <set_file_prev>
+reipset_prev()
+{
+	local set_name_line="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name_line)}"
+	local set_file_prev="${2:?missing 2d argument to function \"$FUNCNAME\" (set_file_prev)}"
+	local set_file_prev_tmp
+
+	# Skip if already fetched sets
+	local -r f_once="$set_file_prev.once"
+	[ -e "$f_once" ] || return 0
+
+	reipset_match_line "$set_name_line" || return
+
+	local set_name="${BASH_REMATCH[3]}"
+
+	set_file_prev_tmp="$(mktemp "$set_file_prev.XXXXXXXX")" || return
+	trap 'unlink "$set_file_prev_tmp"' RETURN
+
+	sudo ipset list "$set_name" -file "$set_file_prev_tmp" || return
+
+	# skip ipset(8) header
+	sed -n -E -e '/^([[:digit:]]{1,3}\.|[[:xdigit:]]{0,4}:)/,$p' \
+		-i "$set_file_prev_tmp" || return
+
+	# sort(1) and uniq(1) content
+	LC_ALL=C sort -n "$set_file_prev_tmp" |\
+	LC_ALL=C uniq >"$set_file_prev" || return
+
+	unlink "$f_once"
+	return
+}
+
+# Usage: reipset <set_name> <set_file_curr> <set_file_prev>
+reipset()
+{
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	local set_file_curr="${2:?missing 2d argument to function \"$FUNCNAME\" (set_file_curr)}"
+	local set_file_prev="${3:?missing 3rd argument to function \"$FUNCNAME\" (set_file_prev)}"
+
+	# should we update ipset?
+	if cmp -s "$set_file_curr" "$set_file_prev"; then
+		nctl_log_msg '%20s : no changes\n' "$set_name"
+	elif [ $? -eq 2 ]; then
+		nctl_log_msg '%20s : no data file(s)\n' "$set_name"
+	else
+		# nctl_log_* family preserves return codes (which is non zero here)
+		:
+
+		nctl_log_msg '%20s : starting update\n' "$set_name"
+
+		nctl_log_msg '-----> begin patch\n'
+		{
+			{
+				diff --old-line-format="del $set_name %L" \
+				     --new-line-format="add $set_name %L" \
+				     --unchanged-line-format='' \
+				     "$set_file_prev" "$set_file_curr"
+				:
+			} |sed -Ee"s/^(del $set_name [^[:space:]]+).*/\1/" |\
+				nctl_log_pipe_tee |sudo ipset -exist restore
+		} 2>&1 |nctl_log_pipe
+		nctl_log_msg '-----> end patch\n' || return
+
+		# install current data file to previous data file
+		nctl_install "$set_file_curr" "$set_file_prev" 2>&1 |nctl_log_pipe
+
+		nctl_log_msg '%20s : finishing update\n' "$set_name"
+	fi
+}
+
+# Usage: reipset_use_backup <set_name> <set_file>
+reipset_use_backup()
+{
+	# use backup file?
+	[ $? -eq 0 ] && return
+
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	local set_file="${2:?missing 2d argument to function \"$FUNCNAME\" (set_file)}"
+	local set_file_bak="$set_file$NCTL_BAK"
+	local set_file_bak_nopath="${set_file_bak##*/}"
+
+	nctl_log_msg 'Set "%s" sync error(s): trying backup "%s"\n' \
+		"$set_name" "$set_file_bak_nopath"
+
+	if [ -f "$set_file_bak" ]; then
+		nctl_install "$set_file_bak" "$set_file" 2>&1 |nctl_log_pipe
+	else
+		nctl_log_msg 'Backup file "%s" for set "%s" is missing: fatal\n' \
+		"$set_file_bak_nopath" "$set_name"
+	fi
+}
+
+# Report start
+nctl_begin_msg
+
+# Make backup of the original rules file if needed
+nctl_log_msg 'Backup original configuration\n'
+
+nctl_backup \
+	"${reipset_data_curr_uniq[@]}" \
+	"${reipset_data_prev_uniq[@]}" 2>&1 |nctl_log_pipe
+nctl_check_ok 'ERRORS WHEN BACKUP FILES\n'
+__restore_original_files=y
+
+# Initialize ipset rules if necessary
+if ! [ "$(sudo ipset -name list |wc -l)" -ne 0 ] 2>/dev/null; then
+	nctl_log_msg 'Initialize ipset rules in kernel\n'
+	{
+		cat "$REIPSET_DIR"/template/ipset{4,6,}.template |\
+		sudo ipset -exist restore
+	} 2>&1 |nctl_log_pipe
+	nctl_check_ok 'ERRORS WHEN INITIALIZING SETS\n'
+fi
+
+# Synchronize sets
+case "$1" in
+	[Ff][Oo][Rr][Cc][Ee])
+		force=y
+		;;
+	*)
+		force=
+		;;
+esac
+
+nctl_log_msg 'Synchronize ipsets\n'
+
+# Fetch remote data
+if nctl_is_yes "$REIPSET_FETCH_REMOTE"; then
+	rsync --timeout=30 --contimeout=15 $REIPSET_RSYNC_ARGS \
+		--no-o --no-g --no-p --no-t --no-D -q --delete-after -- \
+		"$REIPSET_URL" "$reipset_remote_dir" 2>&1 |nctl_log_pipe ||:
+fi
+
+for ((i = 0; i < reipset_sets_uniq_size; i++)); do
+	# Start with empty files
+	{
+		set_file_curr="${reipset_data_curr_uniq[$i]}"
+		set_file_prev="${reipset_data_prev_uniq[$i]}"
+
+		# Start with empty files
+		:>"$set_file_curr"
+
+		# Mark file to detect failures
+		:>"$set_file_curr.ok"
+
+		# Mark file to avoid multiple fetches
+		[ -n "$force" -o ! -e "$set_file_prev" ] || continue
+		:>"$set_file_prev.once"
+	} 2>&1 |nctl_log_pipe
+	nctl_check_ok 'ERRORS WHEN PREPARING FOR UPDATE\n'
+done
+
+for ((i = 0; i < reipset_sets_size; i++)); do
+	set_name_line="${reipset_sets[$i]}"
+
+	# curr
+	set_file_curr="${reipset_data_curr[$i]}"
+	reipset_curr "$set_name_line" "$set_file_curr" 2>&1 |nctl_log_pipe
+	nctl_check_ok 'ERRORS WHEN SYNCHRONIZING CURR(ENT) DATA\n'
+
+	# prev (if forced or necessary)
+	set_file_prev="${reipset_data_prev[$i]}"
+	[ -n "$force" -o ! -e "$set_file_prev" ] || continue
+	reipset_prev "$set_name_line" "$set_file_prev" 2>&1 |nctl_log_pipe
+	nctl_check_ok 'ERRORS WHEN SYNCHRONIZING PREV(IOUS) DATA\n'
+done
+
+nctl_log_msg 'Apply ipset changes:\n'
+
+for ((i = 0; i < reipset_sets_uniq_size; i++)); do
+	set_name="${reipset_sets_uniq[$i]}"
+
+	set_file_curr="${reipset_data_curr_uniq[$i]}"
+	set_file_prev="${reipset_data_prev_uniq[$i]}"
+
+	if [ ! -e "$set_file_curr.ok" ]; then
+		reipset_use_backup "$set_name" "$set_file_curr"
+		nctl_check_ok 'ERRORS WHEN FETCHING LOCAL/REMOTE DATA\n'
+	fi
+
+	# adjust ipset rules in kernel
+	reipset \
+		"$set_name" \
+		"$set_file_curr" \
+		"$set_file_prev"
+	nctl_check_ok 'ERRORS UPDATING RULES FOR SET "%s"\n' "$set_name"
+done
+
+# Save updated rules
+nctl_log_msg 'Save updated rules using "%s" service\n' "$REIPSET_SYS_SVC_NAME"
+{
+	echo -n "$REIPSET_SYS_SVC_NAME: "
+	sudo service "$REIPSET_SYS_SVC_NAME" save
+} 2>&1 |nctl_log_pipe
+nctl_check_ok 'ERRORS ON SAVING UPDATED RULES\n'
+__restore_original_files=n
+
+exit $nctl_rc

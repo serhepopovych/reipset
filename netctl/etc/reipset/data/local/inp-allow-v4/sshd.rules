@@ -1,0 +1,6 @@
+# openssh
+
+#0.0.0.0/1,tcp:22,0.0.0.0/1      comment "SSH"
+#0.0.0.0/1,tcp:22,128.0.0.0/1    comment "SSH"
+#128.0.0.0/1,tcp:22,0.0.0.0/1    comment "SSH"
+#128.0.0.0/1,tcp:22,128.0.0.0/1  comment "SSH"

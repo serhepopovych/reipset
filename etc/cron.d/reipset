@@ -1,0 +1,2 @@
+# Periodically pull changes for ip sets
+#*/10 * * * * root /netctl/bin/reipset >/dev/null 2>&1

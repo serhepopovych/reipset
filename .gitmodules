@@ -1,0 +1,3 @@
+[submodule ".subprojects/libreconf"]
+	path = .subprojects/libreconf
+	url = https://github.com/serhepopovych/libreconf.git

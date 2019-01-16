@@ -1,0 +1,7 @@
+## icmp
+
+# echo-request
+0.0.0.0/1,icmp:echo-request,0.0.0.0/1     comment "ICMP:ECHO-REQUEST"
+0.0.0.0/1,icmp:echo-request,128.0.0.0/1   comment "ICMP:ECHO-REQUEST"
+128.0.0.0/1,icmp:echo-request,0.0.0.0/1   comment "ICMP:ECHO-REQUEST"
+128.0.0.0/1,icmp:echo-request,128.0.0.0/1 comment "ICMP:ECHO-REQUEST"

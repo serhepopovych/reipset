@@ -1,0 +1,19 @@
+## icmpv6
+
+# echo-request
+::/1,icmpv6:echo-request,::/1         comment "ICMPV6:ECHO-REQUEST"
+::/1,icmpv6:echo-request,8000::/1     comment "ICMPV6:ECHO-REQUEST"
+8000::/1,icmpv6:echo-request,::/1     comment "ICMPV6:ECHO-REQUEST"
+8000::/1,icmpv6:echo-request,8000::/1 comment "ICMPV6:ECHO-REQUEST"
+
+# neighbour-solicitation
+::/1,icmpv6:neighbour-solicitation,::/1         comment "ICMPV6:NEIGHBOUR-SOLICITATION"
+::/1,icmpv6:neighbour-solicitation,8000::/1     comment "ICMPV6:NEIGHBOUR-SOLICITATION"
+8000::/1,icmpv6:neighbour-solicitation,::/1     comment "ICMPV6:NEIGHBOUR-SOLICITATION"
+8000::/1,icmpv6:neighbour-solicitation,8000::/1 comment "ICMPV6:NEIGHBOUR-SOLICITATION"
+
+# neighbour-advertisement
+::/1,icmpv6:neighbour-advertisement,::/1         comment "ICMPV6:NEIGHBOUR-ADVERTISEMENT"
+::/1,icmpv6:neighbour-advertisement,8000::/1     comment "ICMPV6:NEIGHBOUR-ADVERTISEMENT"
+8000::/1,icmpv6:neighbour-advertisement,::/1     comment "ICMPV6:NEIGHBOUR-ADVERTISEMENT"
+8000::/1,icmpv6:neighbour-advertisement,8000::/1 comment "ICMPV6:NEIGHBOUR-ADVERTISEMENT"
