@@ -1,0 +1,17 @@
+Re-configure ip sets by applying delta changes
+==============================================
+
+Create sets with given parameters in template files if no sets already
+exist and populate them with data stored locally (default) or fetched
+from remote directories using rsync(1) (off by default) or from both
+locations.
+
+Only differences are applied by adding/deleting set elements that are
+present/missing in new version of set data.
+
+In case of failure previous version of ip set rules reloaded using
+system service management facilities.
+
+It is possible to pull for changes periodically with crontab(1) file
+provided in /etc/cron.d/reipset that runs /netctl/bin/reipset
+periodically.
