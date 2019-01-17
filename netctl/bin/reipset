@@ -17,7 +17,6 @@ declare -a crt1_request_tools_list=(
 	'uniq'		# uniq(1)
 	'cat'		# cat(1)
 	'mktemp'	# mktemp(1)
-	'unlink'	# unlink(1)
 	'rm'		# rm(1)
 	'sudo'		# sudo(8)
 )
@@ -222,9 +221,9 @@ exit_handler()
 	# remove mark files
 	for ((i = 0; i < reipset_data_curr_uniq_size; i++)); do
 		f_ok="${reipset_data_curr_uniq[$i]}.ok"
-		[ ! -e "$f_ok" ] || unlink "$f_ok" || nctl_inc_rc nctl_rc
+		[ ! -e "$f_ok" ] || rm -f "$f_ok" || nctl_inc_rc nctl_rc
 		f_once="${reipset_data_prev_uniq[$i]}.once"
-		[ ! -e "$f_once" ] || unlink "$f_once" || nctl_inc_rc nctl_rc
+		[ ! -e "$f_once" ] || rm -f "$f_once" || nctl_inc_rc nctl_rc
 	done
 
 	# Report end
@@ -277,7 +276,7 @@ reipset_curr()
 	[ -e "$f_ok" ] || return 0
 
 	set_file_curr_tmp="$(mktemp "$set_file_curr.XXXXXXXX")" || return
-	trap 'unlink "$set_file_curr_tmp"' RETURN
+	trap 'rm -f "$set_file_curr_tmp"' RETURN
 
 	# Usage: reipset_cat <dir>
 	reipset_cat()
@@ -317,7 +316,7 @@ reipset_curr()
 				# end each file with \n
 				echo
 			else
-				unlink "$f_ok"
+				rm "$f_ok"
 				return
 			fi
 		done
@@ -366,7 +365,7 @@ reipset_prev()
 	local set_name="${BASH_REMATCH[3]}"
 
 	set_file_prev_tmp="$(mktemp "$set_file_prev.XXXXXXXX")" || return
-	trap 'unlink "$set_file_prev_tmp"' RETURN
+	trap 'rm -f "$set_file_prev_tmp"' RETURN
 
 	sudo ipset list "$set_name" -file "$set_file_prev_tmp" || return
 
@@ -378,7 +377,7 @@ reipset_prev()
 	LC_ALL=C sort -n "$set_file_prev_tmp" |\
 	LC_ALL=C uniq >"$set_file_prev" || return
 
-	unlink "$f_once"
+	rm "$f_once"
 	return
 }
 
