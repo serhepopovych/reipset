@@ -1,0 +1,24 @@
+#!/bin/sh -e
+
+# Requires: useradd(8), userdel(8), usermod(8)
+
+## Adjust filesystem ownership and permissions
+
+[ "$EUID" != 0 ] && owner='' || owner='root:root'
+
+# $ROOT/etc/sudoers.d/10-netctl-reipset
+adj_rights "$owner" 0440 "$ROOT/etc/sudoers.d/10-netctl-reipset"
+
+[ "$EUID" != 0 ] || owner="root:$RECONFIGURE_GROUP"
+
+# $DEST/netctl/etc/reipset/
+adj_rights "$owner" 2775 \
+	"$DEST/netctl/etc/reipset/data/.curr" \
+	"$DEST/netctl/etc/reipset/data/.prev" \
+	"$DEST/netctl/etc/reipset/data/remote" \
+	"$DEST/netctl/etc/reipset/data/local/fwd-d2u-classify-v4" \
+	"$DEST/netctl/etc/reipset/data/local/fwd-d2u-classify-v6" \
+	"$DEST/netctl/etc/reipset/data/local/fwd-u2d-classify-v4" \
+	"$DEST/netctl/etc/reipset/data/local/fwd-u2d-classify-v6" \
+
+return 0
