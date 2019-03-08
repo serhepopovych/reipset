@@ -1,2 +1,2 @@
 # Periodically pull changes for ip sets
-#*/10 * * * * reconfigure @dest@/netctl/bin/reipset >/dev/null 2>&1
+#*/10 * * * * reconfigure @target@/netctl/bin/reipset >/dev/null 2>&1
