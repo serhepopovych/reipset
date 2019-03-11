@@ -1,0 +1,326 @@
+#!/bin/bash
+
+# Re-exec itself as given user
+NCTL_RUNAS='reconfigure'
+
+# External tool dependencies, MUST always be defined,
+# even if empty (e.g.: declare -a crt1_request_tools_list=())
+declare -a crt1_request_tools_list=(
+	'ipset'		# ipset(8)
+	'wget'		# wget(1)
+	'cmp'		# cmp(1)
+	'diff'		# diff(1)
+	'service'	# service(8)
+	'sed'		# sed(1)
+	'sort'		# sort(1)
+	'uniq'		# uniq(1)
+	'cat'		# cat(1)
+	'sudo'		# sudo(8)
+)
+
+# Source startup code
+. @target@/netctl/lib/bash/crt1.sh
+
+# Source functions libraries
+. @target@/netctl/lib/bash/libbool.sh
+. @target@/netctl/lib/bash/librtti.sh
+. @target@/netctl/lib/bash/libstring.sh
+. @target@/netctl/lib/bash/libfile.sh
+. @target@/netctl/lib/bash/liblog.sh
+. @target@/netctl/lib/bash/libprocess.sh
+
+# Source reconfiguration library
+. @target@/netctl/lib/bash/libreconf.sh
+
+################################################################################
+
+# Source reiptables configuration (ipset update depends on iptables start/stop/flush)
+nctl_SourceIfNotEmpty "$NCTL_PREFIX/etc/reiptables.conf"
+
+## If not specified in config, set this to default
+
+# local config
+[ -d "$REIPSET_DIR" ] || REIPSET_DIR="$NCTL_PREFIX/etc/reipset"
+[ -d "$REIPSET_DATADIR" ] || REIPSET_DATADIR="$REIPSET_DIR/data"
+[ -n "$REIPSET_SYS_SVC_NAME" ] || REIPSET_SYS_SVC_NAME='ipset'
+[ -n "$REIPTABLES_SYS_SVC_NAME" ] || REIPTABLES_SYS_SVC_NAME='iptables'
+
+[ -n "$REIPSET_URL" ] || REIPSET_URL='http://localhost/%s.txt'
+[ -n "$REIPSET_WGET_ARGS" ] || REIPSET_WGET_ARGS='-qt5 --timeout 90'
+
+### DO NOT EDIT BELOW THIS LINE ###
+
+## We need this globally, and unset before exit in EXIT signal handler
+__reipset_shopt=`shopt -p extglob`
+shopt -s extglob
+
+## Handle list of sets from environment variable "reipset_sets"
+declare -a reipset_sets
+
+[ ${#reipset_sets[@]} -eq 0 ] || nctl_strsep "$reipset_sets" ',' reipset_sets
+[ ${#reipset_sets[@]} -gt 0 ] || nctl_set_val reipset_sets "${REIPSET_SETS[@]}"
+[ ${#reipset_sets[@]} -gt 0 ] || exit
+
+## Map set names to filenames
+
+# prev
+declare -a reipset_data_prev
+nctl_templ_expand reipset_data_prev \
+	"$REIPSET_DATADIR/.prev/%s.txt" \
+	"${reipset_sets[@]#@([Aa][Ll][Ll]|[Ll][Oo][Cc][Aa][Ll]|[Rr][Ee][Mm][Oo][Tt][Ee]):}"
+declare -i reipset_data_prev_size=${#reipset_data_prev[@]}
+
+# curr
+declare -a reipset_data_curr
+nctl_templ_expand reipset_data_curr \
+	"$REIPSET_DATADIR/.curr/%s.txt" \
+	"${reipset_sets[@]#@([Aa][Ll][Ll]|[Ll][Oo][Cc][Aa][Ll]|[Rr][Ee][Mm][Oo][Tt][Ee]):}"
+declare -i reipset_data_curr_size=${#reipset_data_curr[@]}
+
+# local
+reipset_data_local="$REIPSET_DATADIR/local"
+
+# sets
+declare -i reipset_sets_size=${#reipset_sets[@]}
+
+## Lock subsystem: prevent from running multiple instances
+nctl_subsys_lock
+nctl_check_ok 'FAIL TO RUN "%s" SUBSYSTEM EXCLUSIVELY\n' "$NCTL_SUBSYS_NAME"
+
+__restore_original_files=n
+exit_handler()
+{
+	# revert before exit on failure
+	if ! nctl_is_no "$__restore_original_files"; then
+		echo '** Restoring original configuration **'
+
+		# restore configuration files
+		nctl_restore \
+			"${reipset_data_curr[@]}" \
+			"${reipset_data_prev[@]}" ||
+			nctl_inc_rc nctl_rc
+
+		# iptables depends on ipset: flush before restarting ipset
+		sudo service "$REIPTABLES_SYS_SVC_NAME" flush ||
+			nctl_inc_rc nctl_rc
+		sudo service "$REIPSET_SYS_SVC_NAME" flush ||
+			nctl_inc_rc nctl_rc
+		sudo service "$REIPSET_SYS_SVC_NAME" restart ||
+			nctl_inc_rc nctl_rc
+		sudo service "$REIPTABLES_SYS_SVC_NAME" restart ||
+			nctl_inc_rc nctl_rc
+	fi
+
+	# remove backups
+	nctl_cleanup \
+		"${reipset_data_curr[@]}" \
+		"${reipset_data_prev[@]}" ||
+		nctl_inc_rc nctl_rc
+
+	## Unlock subsystem
+	nctl_subsys_unlock ||
+		nctl_inc_rc nctl_rc
+
+	## Set shopt to its original value
+	eval "$__reipset_shopt"
+
+	exit $nctl_rc
+}
+trap 'exit_handler 2>&1 |nctl_log_pipe' EXIT
+
+# Usage: reipset_curr <set_name> [<set_file>]
+reipset_curr()
+{
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	local set_type="${set_name%%:*}"
+	set_name="${set_name#*:}"
+	local set_file="$2"
+	# Set Syncronization types
+	#   SS_LOCAL   : Local only
+	#   SS_REMOTE  : Remote only
+	#   SS_ALL     : Both local & remote
+	local -ir SS_LOCAL=1 SS_REMOTE=2 SS_ALL=3
+	local -i ss_type
+	local -a locald
+	local f
+
+	case "$set_type" in
+		[Aa][Ll][Ll]|"$set_name")
+			ss_type=$SS_ALL
+			;;
+		[Ll][Oo][Cc][Aa][Ll]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll])
+			ss_type=$SS_LOCAL
+			;;
+		[Rr][Ee][Mm][Oo][Tt][Ee])
+			ss_type=$SS_REMOTE
+			;;
+		*)
+			return 1
+			;;
+	esac
+
+	{
+		# remote
+		if [ $((ss_type & SS_REMOTE)) -ne 0 ]; then
+			wget $REIPSET_WGET_ARGS -O - "$(printf "$REIPSET_URL" "$set_name")" || return
+			# end each file with \n
+			echo
+		fi
+		# local
+		if [ $((ss_type & SS_LOCAL)) -ne 0 ] &&
+		   nctl_paths_expand_a locald "$reipset_data_local/$set_name/*.rules"; then
+			for f in "${locald[@]}"; do
+				cat "$f" || return
+				# end each file with \n
+				echo
+			done
+		fi
+	} |\
+	sed -Ee"\
+/^[[:space:]]*(#|$)/d;\
+s/$WO_IF_TEMPL/$WO_IF/g;\
+s/$UA_IF_TEMPL/$UA_IF/g" |\
+	LC_ALL=C sort -n |eval LC_ALL=C uniq -u "${set_file:+>"$set_file"}"
+}
+
+# Usage: reipset_prev <set_name> [<set_file>]
+reipset_prev()
+{
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	set_name="${set_name#*:}"
+	local set_file="$2"
+
+	sudo ipset list "$set_name" |\
+		sed -nEe'/^([[:digit:]]{1,3}\.|[[:xdigit:]]{0,4}:)/,$p' |\
+		LC_ALL=C sort -n |eval LC_ALL=C uniq -u "${set_file:+>"$set_file"}"
+}
+
+# Usage: reipset_use_backup <set_name> <set_file>
+reipset_use_backup()
+{
+	# use backup file?
+	[ $? -eq 0 ] && return
+
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	set_name="${set_name#*:}"
+	local set_file="${2:?missing 2d argument to function \"$FUNCNAME\" (set_file)}"
+
+	[ -s "$set_file" ] &&
+	nctl_log_msg 'Set "%s" data file sync error(s): using "%s"\n' \
+		"$set_name" "${set_file#$REIPSET_DATADIR/}$NCTL_BAK" ||:
+	{
+		[ -f "$set_file$NCTL_BAK" ] &&
+			nctl_install "$set_file"{"$NCTL_BAK",} ||
+			:>"$set_file"
+	} 2>&1 |nctl_log_pipe
+	nctl_get_rc
+}
+
+# Usage: reipset <set_name> <data_curr> <data_prev>
+reipset()
+{
+	local set_name="${1:?missing 1st argument to function \"$FUNCNAME\" (set_name)}"
+	set_name="${set_name#*:}"
+	local data_curr="${2:?missing 2d argument to function \"$FUNCNAME\" (data_curr)}"
+	local data_prev="${3:?missing 3rd argument to function \"$FUNCNAME\" (data_prev)}"
+
+	# should we update ipset?
+	if cmp -s "$data_curr" "$data_prev"; then
+		nctl_log_msg '%20s : no changes\n' "$set_name"
+	elif [ $? -eq 2 ]; then
+		nctl_log_msg '%20s : no data file(s)\n' "$set_name"
+	else
+		local -i rc=0
+
+		nctl_log_msg '%20s : starting update\n' "$set_name"
+
+		nctl_log_msg '-----> begin patch\n'
+		{
+			{
+				diff --old-line-format="del $set_name %L" \
+				     --new-line-format="add $set_name %L" \
+				     --unchanged-line-format='' \
+				     "$data_prev" "$data_curr"
+				:
+			} |sed -Ee"s/^(del $set_name [^[:space:]]+).*/\1/" |\
+				nctl_log_pipe_tee |sudo ipset -exist restore
+		} 2>&1 |nctl_log_pipe
+		nctl_get_rc
+		nctl_log_msg '-----> end patch\n'
+
+		if nctl_inc_rc rc; then
+			# install current data file to previous data file
+			nctl_install "$data_curr" "$data_prev" 2>&1 |nctl_log_pipe
+			nctl_get_rc
+		else
+			nctl_set_rc $rc
+		fi
+
+		nctl_log_msg '%20s : finishing update\n' "$set_name"
+	fi
+}
+
+# Report start
+nctl_begin_msg
+
+# Make backup of the original rules file if needed
+nctl_log_msg 'Backup original configuration\n'
+__restore_original_files=y
+nctl_backup \
+	"${reipset_data_curr[@]}" \
+	"${reipset_data_prev[@]}" 2>&1 |nctl_log_pipe
+nctl_check_ok 'ERRORS WHEN BACKUP FILES\n'
+
+# Initialize ipset rules if necessary
+if [ "$(sudo ipset -terse list |wc -l)" -eq 0 ] 2>/dev/null; then
+	nctl_log_msg 'Initialize ipset rules in kernel\n'
+	{
+		cat "$REIPSET_DIR"/template/ipset{4,6,}.template |\
+		sudo ipset -exist restore
+	} 2>&1 |nctl_log_pipe
+	nctl_check_ok 'ERRORS WHEN INITIALIZING SETS\n'
+fi
+
+# Synchronize sets
+force="$1"
+[ -n "$force" -a -z "${force#@([Ff][Oo][Rr][Cc][Ee])}" ] || force=
+
+nctl_log_msg 'Synchronize ipsets\n'
+for ((i = 0; i < reipset_sets_size; i++)); do
+	set_name="${reipset_sets[$i]}"
+
+	# curr
+	set_file_curr="${reipset_data_curr[$i]}"
+	reipset_curr "$set_name" "$set_file_curr" 2>&1 |nctl_log_pipe
+	nctl_get_rc || reipset_use_backup "$set_name" "$set_file_curr"
+	nctl_check_ok 'ERRORS WHEN SYNCHRONIZING CURR(ENT) DATA\n'
+
+	# prev (if forced or necessary)
+	set_file_prev="${reipset_data_prev[$i]}"
+	if [ -n "$force" -o ! -e "$set_file_prev" ]; then
+		reipset_prev "$set_name" "$set_file_prev" 2>&1 |nctl_log_pipe
+		nctl_get_rc || reipset_use_backup "$set_name" "$set_file_prev"
+		nctl_check_ok 'ERRORS WHEN SYNCHRONIZING PREV(IOUS) DATA\n'
+	fi
+
+	# adjust ipset rules in kernel
+	reipset \
+		"$set_name" \
+		"$set_file_curr" \
+		"$set_file_prev"
+	nctl_check_ok 'ERRORS UPDATING RULES FOR SET "%s"\n' "${set_name#*:}"
+done
+
+# Save updated rules
+nctl_log_msg 'Save updated rules using "%s" service\n' "$REIPSET_SYS_SVC_NAME"
+{
+	echo -n "$REIPSET_SYS_SVC_NAME: "
+	sudo service "$REIPSET_SYS_SVC_NAME" save
+} 2>&1 |nctl_log_pipe
+nctl_check_ok 'ERRORS ON SAVING UPDATED RULES\n'
+__restore_original_files=n
+
+# Report end
+nctl_end_msg
+
+exit $nctl_rc
