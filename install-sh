@@ -4,12 +4,10 @@
 
 ## Adjust filesystem ownership and permissions
 
-[ "$EUID" != 0 ] && owner='' || owner='root:root'
-
 # $ROOT/etc/sudoers.d/10-netctl-reipset
-adj_rights "$owner" 0440 "$ROOT/etc/sudoers.d/10-netctl-reipset"
+adj_rights '' 0440 "$ROOT/etc/sudoers.d/10-netctl-reipset"
 
-[ "$EUID" != 0 ] || owner="root:$RECONFIGURE_GROUP"
+[ "$INSTALL_EUID" != 0 ] && owner='' || owner="root:$RECONFIGURE_GROUP"
 
 # $DEST/netctl/etc/reipset/
 adj_rights "$owner" 2775 \
