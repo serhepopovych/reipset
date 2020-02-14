@@ -7,6 +7,9 @@
 # $ROOT/etc/sudoers.d/10-netctl-reipset
 adj_rights '' 0440 "$ROOT/etc/sudoers.d/10-netctl-reipset"
 
+# $ROOT/etc/cron.d/reipset
+adj_rights '' 0644 "$ROOT/etc/cron.d/reipset"
+
 [ "$INSTALL_EUID" != 0 ] && owner='' || owner="root:$RECONFIGURE_GROUP"
 
 # $DEST/netctl/etc/reipset/
