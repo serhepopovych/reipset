@@ -62,7 +62,7 @@ create fwd-u2u-block-v4		list:set size 8
 add fwd-u2u-block-v4		fwd-u2u-block-net-v4
 add fwd-u2u-block-v4		fwd-u2u-block-pkt-v4
 
-# Classify packets to/from downlink
+# Classify packets to/from DOWNLINK
 create fwd-u2d-classify-v4	hash:net          family inet hashsize 65536 maxelem 65536 skbinfo counters comment
 create fwd-d2u-classify-v4	hash:net          family inet hashsize 65536 maxelem 65536 skbinfo counters comment
 
@@ -75,6 +75,9 @@ create out-notrack-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536
 create out-block-v4		hash:net,port,net family inet hashsize 1024 maxelem 65536 counters comment
 
 ## Post ACLs
+
+# SNAT packets from DOWNLINK
+create post-fwd-snat-v4		hash:net          family inet hashsize 1024 maxelem 65536 skbinfo counters comment
 
 ## Misc ACLs
 

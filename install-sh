@@ -21,5 +21,8 @@ adj_rights "$owner" 2775 \
 	"$DEST/netctl/etc/reipset/data/local/fwd-d2u-classify-v6" \
 	"$DEST/netctl/etc/reipset/data/local/fwd-u2d-classify-v4" \
 	"$DEST/netctl/etc/reipset/data/local/fwd-u2d-classify-v6" \
+	"$DEST/netctl/etc/reipset/data/local/post-fwd-snat-v4" \
+	"$DEST/netctl/etc/reipset/data/local/post-fwd-snat-v6" \
+	#
 
 return 0

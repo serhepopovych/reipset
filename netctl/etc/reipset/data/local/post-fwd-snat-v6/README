@@ -1,0 +1,6 @@
+# This set is used for ip6tables SNAT
+# and controlled by the reiptables helper.
+#
+# Do not edit manually any rules here.
+# Use reiptables to update/change this set.
+#
