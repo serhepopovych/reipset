@@ -77,7 +77,14 @@ create out-block-v6		hash:net,port,net family inet6 hashsize 1024 maxelem 65536 
 ## Post ACLs
 
 # SNAT packets from DOWNLINK
-create post-fwd-snat-v6		hash:net          family inet6 hashsize 1024 maxelem 65536 skbinfo counters comment
+create post-fwd-snat-pkt-v6	hash:net,port,net family inet6 hashsize 1024 maxelem 65536 skbinfo counters comment
+create post-fwd-snat-n2n-v6	hash:net,net      family inet6 hashsize 1024 maxelem 65536 skbinfo counters comment
+create post-fwd-snat-net-v6	hash:net          family inet6 hashsize 1024 maxelem 65536 skbinfo counters comment
+
+create post-fwd-snat-v6		list:set size 8
+add post-fwd-snat-v6		post-fwd-snat-pkt-v6
+add post-fwd-snat-v6		post-fwd-snat-n2n-v6
+add post-fwd-snat-v6		post-fwd-snat-net-v6
 
 ## Misc ACLs
 
