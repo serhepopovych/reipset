@@ -25,9 +25,6 @@ create inp-allow-v6		hash:net,port,net family inet6 hashsize 1024 maxelem 65536 
 # Blocked services
 create inp-block-v6		hash:net,port,net family inet6 hashsize 1024 maxelem 65536 timeout 10800 counters comment forceadd
 
-# Ratelimit access to service
-create inp-ratelimit-v6		hash:net,port,net family inet6 hashsize 1024 maxelem 65536 comment
-
 ## Forward ACLs
 
 # Block packets from UPLINK to DOWNLINK
